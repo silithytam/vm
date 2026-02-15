@@ -1,6 +1,5 @@
 name: VMess Server via Cloudflare
 
-# Trigger manual, jadi lu harus klik "Run workflow" sendiri
 on:
   workflow_dispatch:
 
@@ -14,26 +13,33 @@ jobs:
       - name: Install Xray Core
         run: |
           echo "Installing Xray..."
-          # Download script install resmi Xray (Pake sudo biar gak permission denied)
-          sudo bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
-          echo "Xray installed successfully."
+          # Download & Unzip Xray manual biar gak ribet permission systemctl
+          wget https://github.com/XTLS/Xray-core/releases/download/v1.8.4/Xray-linux-64.zip
+          unzip Xray-linux-64.zip
+          mv xray /usr/local/bin/
+          mv geoip.dat /usr/local/bin/
+          mv geosite.dat /usr/local/bin/
+          chmod +x /usr/local/bin/xray
+          echo "Xray installed."
 
-      - name: Configure Xray (VMess + WebSocket)
+      - name: Configure Xray & Start
         run: |
-          # UUID DI-HARDCODE DI SINI
-          # Lu bisa ganti string di bawah ini sesuka hati asal formatnya UUID
           UUID="e4b01794-d46e-4154-934c-28dc12735777"
+          echo "::notice title=VMess UUID::UUID: $UUID"
           
-          echo "::notice title=VMess UUID::UUID kamu adalah: $UUID"
+          # Bikin folder config
+          mkdir -p config
           
-          # Buat config JSON untuk Xray
-          # Kita pakai Port 8080 dan Protocol WebSocket (ws) biar tembus Cloudflare
-          # Pake 'sudo tee' karena folder /usr/local/etc/xray/ itu milik root
-          sudo tee /usr/local/etc/xray/config.json > /dev/null <<EOF
+          # Config JSON
+          cat <<EOF > config/config.json
           {
+            "log": {
+              "loglevel": "warning"
+            },
             "inbounds": [
               {
                 "port": 8080,
+                "listen": "127.0.0.1",
                 "protocol": "vmess",
                 "settings": {
                   "clients": [
@@ -59,41 +65,51 @@ jobs:
             ]
           }
           EOF
+          
+          # Jalanin Xray di background
+          nohup xray run -c config/config.json > xray.log 2>&1 &
+          echo "Xray started on port 8080."
+          sleep 2
 
-      - name: Start Xray Service
+      - name: Start Cloudflare Tunnel
         run: |
-          sudo systemctl start xray
-          sudo systemctl status xray --no-pager
-
-      - name: Install & Run Cloudflare Tunnel
-        run: |
-          # Download Cloudflared
+          # Install Cloudflared
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
           
-          # Jalankan Tunnel (TryCloudflare - Quick Tunnel)
-          # Ini akan mengekspos localhost:8080 ke internet public
-          echo "Starting Cloudflare Tunnel..."
-          cloudflared tunnel --url http://localhost:8080 > tunnel.log 2>&1 &
+          echo "Starting Tunnel..."
+          # Jalanin tunnel, output log ke file
+          nohup cloudflared tunnel --url http://127.0.0.1:8080 > tunnel.log 2>&1 &
           
-          # Tunggu sebentar biar tunnel connect dan ambil URL-nya
-          sleep 10
-          grep -o 'https://.*\.trycloudflare.com' tunnel.log > url.txt
-          TUNNEL_URL=$(cat url.txt)
+          # Loop nungguin URL (Maksimal 30x2 detik = 60 detik)
+          echo "Waiting for URL..."
+          FOUND=0
+          for i in {1..30}; do
+            if grep -q "trycloudflare.com" tunnel.log; then
+              FOUND=1
+              break
+            fi
+            echo "Waiting... ($i)"
+            sleep 2
+          done
           
-          echo "::notice title=Cloudflare URL::Link Tunnel kamu: $TUNNEL_URL"
-          echo "----------------------------------------"
-          echo "VMESS CONFIG DETAILS:"
-          echo "Address/Host: (Ambil domain dari URL di atas, tanpa https://)"
-          echo "Port: 443"
-          echo "UUID: $UUID"
-          echo "Network/Transport: ws (WebSocket)"
-          echo "Path: /vmess"
-          echo "TLS: on (true)"
-          echo "----------------------------------------"
+          if [ $FOUND -eq 1 ]; then
+            TUNNEL_URL=$(grep -o 'https://.*\.trycloudflare.com' tunnel.log | head -n 1)
+            echo "::notice title=Cloudflare URL::Link: $TUNNEL_URL"
+            echo "----------------------------------------"
+            echo "SUCCESS! DETAILS:"
+            echo "Host: (Ambil domain dari URL $TUNNEL_URL)"
+            echo "UUID: e4b01794-d46e-4154-934c-28dc12735777"
+            echo "Path: /vmess"
+            echo "TLS: ON"
+            echo "----------------------------------------"
+          else
+            echo "::error::Gagal dapet URL Cloudflare. Cek log di bawah:"
+            cat tunnel.log
+            exit 1
+          fi
 
       - name: Keep Alive
         run: |
-          echo "Server is running. Check the 'Annotations' or logs above for connection details."
-          # Loop supaya action gak langsung selesai (maksimal 6 jam limit GitHub)
-          while true; do sleep 300; echo "Still running..."; done
+          echo "Server is running..."
+          while true; do sleep 300; done
