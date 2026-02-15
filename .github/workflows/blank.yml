@@ -14,8 +14,8 @@ jobs:
       - name: Install Xray Core
         run: |
           echo "Installing Xray..."
-          # Download script install resmi Xray
-          bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+          # Download script install resmi Xray (Pake sudo biar gak permission denied)
+          sudo bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
           echo "Xray installed successfully."
 
       - name: Configure Xray (VMess + WebSocket)
@@ -28,7 +28,8 @@ jobs:
           
           # Buat config JSON untuk Xray
           # Kita pakai Port 8080 dan Protocol WebSocket (ws) biar tembus Cloudflare
-          cat <<EOF > /usr/local/etc/xray/config.json
+          # Pake 'sudo tee' karena folder /usr/local/etc/xray/ itu milik root
+          sudo tee /usr/local/etc/xray/config.json > /dev/null <<EOF
           {
             "inbounds": [
               {
