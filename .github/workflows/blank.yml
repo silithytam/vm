@@ -1,0 +1,98 @@
+name: VMess Server via Cloudflare
+
+# Trigger manual, jadi lu harus klik "Run workflow" sendiri
+on:
+  workflow_dispatch:
+
+jobs:
+  vmess-run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Xray Core
+        run: |
+          echo "Installing Xray..."
+          # Download script install resmi Xray
+          bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+          echo "Xray installed successfully."
+
+      - name: Configure Xray (VMess + WebSocket)
+        run: |
+          # UUID DI-HARDCODE DI SINI
+          # Lu bisa ganti string di bawah ini sesuka hati asal formatnya UUID
+          UUID="e4b01794-d46e-4154-934c-28dc12735777"
+          
+          echo "::notice title=VMess UUID::UUID kamu adalah: $UUID"
+          
+          # Buat config JSON untuk Xray
+          # Kita pakai Port 8080 dan Protocol WebSocket (ws) biar tembus Cloudflare
+          cat <<EOF > /usr/local/etc/xray/config.json
+          {
+            "inbounds": [
+              {
+                "port": 8080,
+                "protocol": "vmess",
+                "settings": {
+                  "clients": [
+                    {
+                      "id": "$UUID",
+                      "alterId": 0
+                    }
+                  ]
+                },
+                "streamSettings": {
+                  "network": "ws",
+                  "wsSettings": {
+                    "path": "/vmess"
+                  }
+                }
+              }
+            ],
+            "outbounds": [
+              {
+                "protocol": "freedom",
+                "settings": {}
+              }
+            ]
+          }
+          EOF
+
+      - name: Start Xray Service
+        run: |
+          sudo systemctl start xray
+          sudo systemctl status xray --no-pager
+
+      - name: Install & Run Cloudflare Tunnel
+        run: |
+          # Download Cloudflared
+          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+          
+          # Jalankan Tunnel (TryCloudflare - Quick Tunnel)
+          # Ini akan mengekspos localhost:8080 ke internet public
+          echo "Starting Cloudflare Tunnel..."
+          cloudflared tunnel --url http://localhost:8080 > tunnel.log 2>&1 &
+          
+          # Tunggu sebentar biar tunnel connect dan ambil URL-nya
+          sleep 10
+          grep -o 'https://.*\.trycloudflare.com' tunnel.log > url.txt
+          TUNNEL_URL=$(cat url.txt)
+          
+          echo "::notice title=Cloudflare URL::Link Tunnel kamu: $TUNNEL_URL"
+          echo "----------------------------------------"
+          echo "VMESS CONFIG DETAILS:"
+          echo "Address/Host: (Ambil domain dari URL di atas, tanpa https://)"
+          echo "Port: 443"
+          echo "UUID: $UUID"
+          echo "Network/Transport: ws (WebSocket)"
+          echo "Path: /vmess"
+          echo "TLS: on (true)"
+          echo "----------------------------------------"
+
+      - name: Keep Alive
+        run: |
+          echo "Server is running. Check the 'Annotations' or logs above for connection details."
+          # Loop supaya action gak langsung selesai (maksimal 6 jam limit GitHub)
+          while true; do sleep 300; echo "Still running..."; done
