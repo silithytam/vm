@@ -13,13 +13,12 @@ jobs:
       - name: Install Xray Core
         run: |
           echo "Installing Xray..."
-          # Download & Unzip Xray manual biar gak ribet permission systemctl
-          wget https://github.com/XTLS/Xray-core/releases/download/v1.8.4/Xray-linux-64.zip
-          unzip Xray-linux-64.zip
-          mv xray /usr/local/bin/
-          mv geoip.dat /usr/local/bin/
-          mv geosite.dat /usr/local/bin/
-          chmod +x /usr/local/bin/xray
+          wget -q https://github.com/XTLS/Xray-core/releases/download/v1.8.4/Xray-linux-64.zip
+          unzip -q Xray-linux-64.zip
+          sudo mv xray /usr/local/bin/
+          sudo mv geoip.dat /usr/local/bin/
+          sudo mv geosite.dat /usr/local/bin/
+          sudo chmod +x /usr/local/bin/xray
           echo "Xray installed."
 
       - name: Configure Xray & Start
@@ -27,10 +26,7 @@ jobs:
           UUID="e4b01794-d46e-4154-934c-28dc12735777"
           echo "::notice title=VMess UUID::UUID: $UUID"
           
-          # Bikin folder config
           mkdir -p config
-          
-          # Config JSON
           cat <<EOF > config/config.json
           {
             "log": {
@@ -66,7 +62,6 @@ jobs:
           }
           EOF
           
-          # Jalanin Xray di background
           nohup xray run -c config/config.json > xray.log 2>&1 &
           echo "Xray started on port 8080."
           sleep 2
@@ -78,14 +73,18 @@ jobs:
           sudo dpkg -i cloudflared.deb
           
           echo "Starting Tunnel..."
-          # Jalanin tunnel, output log ke file
+          # Hapus log lama kalau ada
+          rm -f tunnel.log
+          
+          # Jalanin tunnel
           nohup cloudflared tunnel --url http://127.0.0.1:8080 > tunnel.log 2>&1 &
           
-          # Loop nungguin URL (Maksimal 30x2 detik = 60 detik)
+          # Loop nungguin URL SPESIFIK (Maksimal 60 detik)
           echo "Waiting for URL..."
           FOUND=0
           for i in {1..30}; do
-            if grep -q "trycloudflare.com" tunnel.log; then
+            # Cek apakah ada string https://...trycloudflare.com
+            if grep -q "https://[-a-zA-Z0-9]*\.trycloudflare\.com" tunnel.log; then
               FOUND=1
               break
             fi
@@ -94,7 +93,15 @@ jobs:
           done
           
           if [ $FOUND -eq 1 ]; then
-            TUNNEL_URL=$(grep -o 'https://.*\.trycloudflare.com' tunnel.log | head -n 1)
+            # Ambil URL-nya
+            TUNNEL_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' tunnel.log | head -n 1)
+            
+            if [ -z "$TUNNEL_URL" ]; then
+                echo "::error::URL ketemu di grep tapi variabel kosong. Cek log:"
+                cat tunnel.log
+                exit 1
+            fi
+
             echo "::notice title=Cloudflare URL::Link: $TUNNEL_URL"
             echo "----------------------------------------"
             echo "SUCCESS! DETAILS:"
@@ -104,7 +111,7 @@ jobs:
             echo "TLS: ON"
             echo "----------------------------------------"
           else
-            echo "::error::Gagal dapet URL Cloudflare. Cek log di bawah:"
+            echo "::error::Gagal dapet URL Cloudflare (Timeout). Ini isi log terakhir:"
             cat tunnel.log
             exit 1
           fi
