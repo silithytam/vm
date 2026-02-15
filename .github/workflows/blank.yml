@@ -1,385 +1,46 @@
-name: VMess Server + Cloudflare Tunnel
+name: Root SSH via Cloudflare
 
 on:
   workflow_dispatch:
-    inputs:
-      uuid:
-        description: 'VMess UUID (kosongkan untuk auto-generate)'
-        required: false
-        default: ''
-      ws_path:
-        description: 'WebSocket Path'
-        required: false
-        default: '/vmess'
-      keep_alive_hours:
-        description: 'Durasi server aktif (jam, max 6)'
-        required: false
-        default: '6'
-        type: choice
-        options:
-          - '1'
-          - '2'
-          - '3'
-          - '4'
-          - '5'
-          - '6'
 
 jobs:
-  vmess-tunnel:
-    name: 🚀 VMess + CF Tunnel
+  ssh:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # Max 6 jam
+    timeout-minutes: 360
 
     steps:
-      # ============================================
-      # STEP 1: Setup Variables
-      # ============================================
-      - name: 📋 Setup Variables
-        id: vars
+      - name: Install SSH Server
         run: |
-          if [ -z "${{ github.event.inputs.uuid }}" ]; then
-            UUID="e4b01794-d46e-4154-934c-28dc12735777"
-          else
-            UUID="${{ github.event.inputs.uuid }}"
-          fi
+          sudo apt update
+          sudo apt install -y openssh-server curl
 
-          WS_PATH="${{ github.event.inputs.ws_path }}"
-          if [ -z "$WS_PATH" ]; then
-            WS_PATH="/vmess"
-          fi
-
-          echo "UUID=${UUID}" >> $GITHUB_OUTPUT
-          echo "PORT=8080" >> $GITHUB_OUTPUT
-          echo "WS_PATH=${WS_PATH}" >> $GITHUB_OUTPUT
-
-          echo "✅ UUID       : ${UUID}"
-          echo "✅ Port       : 8080"
-          echo "✅ WS Path    : ${WS_PATH}"
-
-      # ============================================
-      # STEP 2: Install Xray-core
-      # ============================================
-      - name: 📦 Install Xray-core
+      - name: Configure Root Login
         run: |
-          echo "⏳ Downloading Xray-core..."
-          LATEST=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep tag_name | cut -d '"' -f 4)
-          echo "   Version: ${LATEST}"
+          sudo mkdir -p /var/run/sshd
 
-          wget -q "https://github.com/XTLS/Xray-core/releases/download/${LATEST}/Xray-linux-64.zip" -O xray.zip
+          # Set root password
+          echo "root:bexcodex" | sudo chpasswd
 
-          sudo mkdir -p /usr/local/xray
-          sudo unzip -oq xray.zip -d /usr/local/xray
-          sudo chmod +x /usr/local/xray/xray
+          # Enable root login + password auth
+          sudo sed -i 's/^#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/^PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
 
-          /usr/local/xray/xray version
-          echo "✅ Xray-core installed successfully"
+          # Restart ssh
+          sudo service ssh restart
 
-      # ============================================
-      # STEP 3: Configure Xray VMess + WebSocket
-      # ============================================
-      - name: ⚙️ Configure Xray VMess + WebSocket
+      - name: Install Cloudflared
         run: |
-          sudo tee /usr/local/xray/config.json > /dev/null << 'XRAYEOF'
-          {
-            "log": {
-              "loglevel": "warning",
-              "access": "/tmp/xray-access.log",
-              "error": "/tmp/xray-error.log"
-            },
-            "inbounds": [
-              {
-                "listen": "127.0.0.1",
-                "port": ${{ steps.vars.outputs.PORT }},
-                "protocol": "vmess",
-                "settings": {
-                  "clients": [
-                    {
-                      "id": "${{ steps.vars.outputs.UUID }}",
-                      "alterId": 0,
-                      "security": "auto"
-                    }
-                  ]
-                },
-                "streamSettings": {
-                  "network": "ws",
-                  "wsSettings": {
-                    "path": "${{ steps.vars.outputs.WS_PATH }}",
-                    "headers": {
-                      "Host": ""
-                    }
-                  }
-                },
-                "sniffing": {
-                  "enabled": true,
-                  "destOverride": ["http", "tls"]
-                }
-              }
-            ],
-            "outbounds": [
-              {
-                "protocol": "freedom",
-                "tag": "direct"
-              },
-              {
-                "protocol": "blackhole",
-                "tag": "blocked"
-              }
-            ],
-            "routing": {
-              "rules": [
-                {
-                  "type": "field",
-                  "ip": ["geoip:private"],
-                  "outboundTag": "direct"
-                }
-              ]
-            }
-          }
-          XRAYEOF
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+          -o cloudflared
+          chmod +x cloudflared
+          sudo mv cloudflared /usr/local/bin/
 
-          echo "✅ Xray configuration created"
-          echo "📄 Config:"
-          cat /usr/local/xray/config.json
-
-      # ============================================
-      # STEP 4: Start Xray Server
-      # ============================================
-      - name: 🟢 Start Xray Server
+      - name: Start Cloudflare Tunnel
+        env:
+          TUNNEL_TOKEN: eyJhIjoiNTNiNGE2ZDEzNzFkZTU5YWZmODU2ZmQzYjhkZDBlZWUiLCJ0IjoiMzY0ZGY1NWQtMTVlNS00NDNkLTlmYjQtYTk5MjNjNDc5NTNiIiwicyI6Ik5HTTNNRFl5WkRRdE1qUTBaQzAwWXpWaUxUa3pPREl0TnpjM1lqSTJZek5qTldJMCJ9
         run: |
-          echo "⏳ Starting Xray server..."
-          nohup /usr/local/xray/xray run -config /usr/local/xray/config.json > /tmp/xray.log 2>&1 &
-          XRAY_PID=$!
-          echo "XRAY_PID=${XRAY_PID}" >> $GITHUB_ENV
-
-          sleep 3
-
-          # Verify Xray is running
-          if kill -0 $XRAY_PID 2>/dev/null; then
-            echo "✅ Xray started successfully (PID: ${XRAY_PID})"
-          else
-            echo "❌ Xray failed to start!"
-            cat /tmp/xray.log
-            cat /tmp/xray-error.log 2>/dev/null
-            exit 1
-          fi
-
-          # Test port
-          if ss -tlnp | grep -q "${{ steps.vars.outputs.PORT }}"; then
-            echo "✅ Port ${{ steps.vars.outputs.PORT }} is listening"
-          else
-            echo "❌ Port ${{ steps.vars.outputs.PORT }} is NOT listening"
-            ss -tlnp
-            exit 1
-          fi
-
-      # ============================================
-      # STEP 5: Install Cloudflared
-      # ============================================
-      - name: 📦 Install Cloudflared
-        run: |
-          echo "⏳ Installing cloudflared..."
-          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -O cloudflared.deb
-          sudo dpkg -i cloudflared.deb
-          cloudflared version
-          echo "✅ Cloudflared installed successfully"
-
-      # ============================================
-      # STEP 6: Start Cloudflare Quick Tunnel
-      # ============================================
-      - name: 🌐 Start Cloudflare Quick Tunnel
-        id: tunnel
-        run: |
-          echo "⏳ Starting Cloudflare Quick Tunnel..."
-
-          # Start cloudflared tunnel
-          nohup cloudflared tunnel \
-            --url http://127.0.0.1:${{ steps.vars.outputs.PORT }} \
-            --no-autoupdate \
-            --edge-ip-version auto \
-            --protocol quic \
-            > /tmp/cloudflared.log 2>&1 &
-
-          CF_PID=$!
-          echo "CF_PID=${CF_PID}" >> $GITHUB_ENV
-
-          # Wait and extract tunnel URL
-          echo "⏳ Waiting for tunnel URL..."
-          MAX_WAIT=30
-          COUNTER=0
-          TUNNEL_URL=""
-
-          while [ $COUNTER -lt $MAX_WAIT ]; do
-            TUNNEL_URL=$(grep -oP 'https://[a-zA-Z0-9_-]+\.trycloudflare\.com' /tmp/cloudflared.log 2>/dev/null | head -1)
-            if [ -n "$TUNNEL_URL" ]; then
-              break
-            fi
-            sleep 2
-            COUNTER=$((COUNTER + 2))
-            echo "   Waiting... (${COUNTER}s)"
-          done
-
-          if [ -z "$TUNNEL_URL" ]; then
-            echo "❌ Failed to get tunnel URL!"
-            cat /tmp/cloudflared.log
-            exit 1
-          fi
-
-          TUNNEL_HOST=$(echo "$TUNNEL_URL" | sed 's|https://||')
-
-          echo "TUNNEL_URL=${TUNNEL_URL}" >> $GITHUB_ENV
-          echo "TUNNEL_HOST=${TUNNEL_HOST}" >> $GITHUB_ENV
-          echo "TUNNEL_URL=${TUNNEL_URL}" >> $GITHUB_OUTPUT
-          echo "TUNNEL_HOST=${TUNNEL_HOST}" >> $GITHUB_OUTPUT
-
-          echo "✅ Tunnel URL: ${TUNNEL_URL}"
-
-      # ============================================
-      # STEP 7: Generate VMess Client Config & Link
-      # ============================================
-      - name: 📱 Generate VMess Link & Config
-        run: |
-          UUID="${{ steps.vars.outputs.UUID }}"
-          HOST="${TUNNEL_HOST}"
-          WS_PATH="${{ steps.vars.outputs.WS_PATH }}"
-
-          # === Generate VMess Link (v2rayN format) ===
-          VMESS_JSON=$(cat << EOF
-          {
-            "v": "2",
-            "ps": "GitHub-VMess-CF",
-            "add": "${HOST}",
-            "port": "443",
-            "id": "${UUID}",
-            "aid": "0",
-            "scy": "auto",
-            "net": "ws",
-            "type": "none",
-            "host": "${HOST}",
-            "path": "${WS_PATH}",
-            "tls": "tls",
-            "sni": "${HOST}",
-            "alpn": "",
-            "fp": "chrome"
-          }
-          EOF
-          )
-
-          VMESS_LINK="vmess://$(echo -n "${VMESS_JSON}" | base64 -w 0)"
-
-          # === Generate Clash Config ===
-          CLASH_CONFIG=$(cat << EOF
-          proxies:
-            - name: "GitHub-VMess-CF"
-              type: vmess
-              server: ${HOST}
-              port: 443
-              uuid: ${UUID}
-              alterId: 0
-              cipher: auto
-              udp: true
-              tls: true
-              skip-cert-verify: false
-              servername: ${HOST}
-              network: ws
-              ws-opts:
-                path: ${WS_PATH}
-                headers:
-                  Host: ${HOST}
-          EOF
-          )
-
-          # === Display Everything ===
-          echo ""
-          echo "╔══════════════════════════════════════════════════════════╗"
-          echo "║          🚀 VMess + Cloudflare Tunnel Ready!           ║"
-          echo "╠══════════════════════════════════════════════════════════╣"
-          echo "║                                                        ║"
-          echo "║  📡 Server Information                                 ║"
-          echo "╠══════════════════════════════════════════════════════════╣"
-          echo "  🌐 Address    : ${HOST}"
-          echo "  🔌 Port       : 443"
-          echo "  🔑 UUID       : ${UUID}"
-          echo "  🔄 AlterID    : 0"
-          echo "  🔒 Security   : auto"
-          echo "  📡 Network    : ws (WebSocket)"
-          echo "  📂 WS Path    : ${WS_PATH}"
-          echo "  🛡️  TLS        : tls"
-          echo "  📌 SNI        : ${HOST}"
-          echo "  🌍 Tunnel URL : ${TUNNEL_URL}"
-          echo "╠══════════════════════════════════════════════════════════╣"
-          echo "║  📱 VMess Link (v2rayN / v2rayNG / Nekobox)            ║"
-          echo "╠══════════════════════════════════════════════════════════╣"
-          echo ""
-          echo "${VMESS_LINK}"
-          echo ""
-          echo "╠══════════════════════════════════════════════════════════╣"
-          echo "║  🐱 Clash / Clash Meta Config                          ║"
-          echo "╠══════════════════════════════════════════════════════════╣"
-          echo ""
-          echo "${CLASH_CONFIG}"
-          echo ""
-          echo "╠══════════════════════════════════════════════════════════╣"
-          echo "║  ⏰ Server akan aktif selama ${{ github.event.inputs.keep_alive_hours }} jam               ║"
-          echo "║  ⚠️  URL berubah setiap kali workflow dijalankan        ║"
-          echo "╚══════════════════════════════════════════════════════════╝"
-          echo ""
-
-          # Save configs to files
-          echo "${VMESS_LINK}" > /tmp/vmess_link.txt
-          echo "${CLASH_CONFIG}" > /tmp/clash_config.yaml
-
-      # ============================================
-      # STEP 8: Health Check Loop + Keep Alive
-      # ============================================
-      - name: 💓 Keep Alive & Health Monitor
-        run: |
-          HOURS=${{ github.event.inputs.keep_alive_hours }}
-          TOTAL_SECONDS=$((HOURS * 3600))
-          CHECK_INTERVAL=300  # Check setiap 5 menit
-          ELAPSED=0
-
-          echo "⏰ Server aktif selama ${HOURS} jam (${TOTAL_SECONDS} detik)"
-          echo "🔍 Health check setiap ${CHECK_INTERVAL} detik"
-          echo ""
-
-          while [ $ELAPSED -lt $TOTAL_SECONDS ]; do
-            REMAINING=$(( (TOTAL_SECONDS - ELAPSED) / 60 ))
-
-            # Check Xray
-            if kill -0 $XRAY_PID 2>/dev/null; then
-              XRAY_STATUS="✅ Running"
-            else
-              XRAY_STATUS="❌ Down - Restarting..."
-              nohup /usr/local/xray/xray run -config /usr/local/xray/config.json > /tmp/xray.log 2>&1 &
-              XRAY_PID=$!
-            fi
-
-            # Check Cloudflared
-            if kill -0 $CF_PID 2>/dev/null; then
-              CF_STATUS="✅ Running"
-            else
-              CF_STATUS="❌ Down - Restarting..."
-              nohup cloudflared tunnel \
-                --url http://127.0.0.1:${{ steps.vars.outputs.PORT }} \
-                --no-autoupdate \
-                --protocol quic \
-                > /tmp/cloudflared.log 2>&1 &
-              CF_PID=$!
-              sleep 10
-
-              NEW_URL=$(grep -oP 'https://[a-zA-Z0-9_-]+\.trycloudflare\.com' /tmp/cloudflared.log 2>/dev/null | head -1)
-              if [ -n "$NEW_URL" ]; then
-                echo "⚠️  NEW TUNNEL URL: ${NEW_URL}"
-              fi
-            fi
-
-            CURRENT_TIME=$(date '+%Y-%m-%d %H:%M:%S')
-            echo "[${CURRENT_TIME}] Xray: ${XRAY_STATUS} | Cloudflared: ${CF_STATUS} | Sisa: ${REMAINING} menit"
-
-            sleep $CHECK_INTERVAL
-            ELAPSED=$((ELAPSED + CHECK_INTERVAL))
-          done
-
-          echo ""
-          echo "⏰ Waktu habis! Server dihentikan."
-          echo "🔄 Jalankan ulang workflow untuk server baru."
+          cloudflared tunnel --no-autoupdate run --token $TUNNEL_TOKEN &
+          echo "Root SSH is ready"
+          tail -f /dev/null
